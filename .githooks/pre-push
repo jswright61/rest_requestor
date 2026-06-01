@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+while read local_ref local_sha remote_ref remote_sha; do
+  # Only enforce on main; skip branch deletions
+  [[ "$remote_ref" == "refs/heads/main" ]] || continue
+  [[ "$local_sha" == "0000000000000000000000000000000000000000" ]] && continue
+
+  VERSION=$(ruby -e "require_relative 'lib/rest_requestor/version'; puts RestRequestor::VERSION" 2>/dev/null)
+
+  if [[ -z "$VERSION" ]]; then
+    echo "pre-push: could not read VERSION from lib/rest_requestor/version.rb" >&2
+    exit 1
+  fi
+
+  TAG="v${VERSION}"
+
+  if ! git tag --points-at HEAD | grep -q "^${TAG}$"; then
+    echo "" >&2
+    echo "pre-push: cannot push main without tagging the release first." >&2
+    echo "" >&2
+    echo "  Current version : ${VERSION}" >&2
+    echo "  Expected tag    : ${TAG}" >&2
+    echo "" >&2
+    echo "  Steps:" >&2
+    echo "    1. Bump the version in lib/rest_requestor/version.rb (if not done)" >&2
+    echo "    2. Commit the bump" >&2
+    echo "    3. git tag -a ${TAG} -m 'Release ${VERSION}'" >&2
+    echo "    4. git push origin main ${TAG}" >&2
+    echo "" >&2
+    exit 1
+  fi
+done
+
+exit 0
