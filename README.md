@@ -246,6 +246,12 @@ Bug reports and pull requests are welcome at https://codeberg.org/jswright61/res
 
 Please keep pull requests focused — one fix or feature per PR. If you are planning something substantial, open an issue first to discuss the approach before writing code.
 
+After cloning, activate the pre-push hook:
+
+```
+git config core.hooksPath .githooks
+```
+
 ## Requirements
 
 - Ruby >= 3.0
