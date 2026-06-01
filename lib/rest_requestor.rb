@@ -1,7 +1,11 @@
+# frozen_string_literal: true
+
 require "net/http"
 require "uri"
 require "json"
 require "openssl"
+require_relative "rest_requestor/version"
+require_relative "rest_requestor/config"
 
 class RestRequestor
   class StandardError < StandardError
@@ -21,21 +25,24 @@ class RestRequestor
   end
 
   class RateLimitError < StandardError; end
-
   class NotFoundError < StandardError; end
-
   class ServiceUnavailableError < StandardError; end
+  class TooManyRedirectsError < ::StandardError; end
 
   attr_reader :resp, :elapsed, :options
 
   OPTION_DEFAULTS = {
     max_retries: 7,
+    open_timeout: 10,
+    read_timeout: 30,
     proxy_address: "127.0.0.1",
     proxy_port: 9090,
-    user_agent: "RestRequestor/1.0.1",
+    user_agent: nil,
     skip_proxy: true,
     logger: nil
   }
+
+  FILE_CONFIG = Config.load.freeze
 
   # Shared across instances; cert store is immutable after setup
   def self.ssl_cert_store
@@ -49,12 +56,13 @@ class RestRequestor
   end
 
   def initialize(**kw_args)
-    @options = OPTION_DEFAULTS.merge(kw_args)
+    @options = OPTION_DEFAULTS.merge(FILE_CONFIG).merge(kw_args)
+    warn_no_user_agent if options[:user_agent].to_s.strip.empty?
   end
 
   def request(uri, verb, j_params: {}, f_hash: {}, q_params: {}, auth: nil, headers: {}, body: nil, retries: 0)
-    unless [:get, :post, :put, :delete, :patch].include?(verb)
-      raise ArgumentError, "Verb must be one of :get, :post, :put, :delete, :patch — got #{verb.inspect}"
+    unless [:get, :post, :put, :delete, :patch, :head].include?(verb)
+      raise ArgumentError, "Verb must be one of :get, :post, :put, :delete, :patch, :head — got #{verb.inspect}"
     end
     uri = add_query_string(uri, q_params) if q_params && !q_params.empty?
 
@@ -62,6 +70,7 @@ class RestRequestor
 
     case resp.code.to_i
     when (200...300)
+      return resp.code.to_i if verb == :head
       if resp["Content-Type"]&.include?("application/json")
         JSON.parse(resp.body)
       elsif resp.code.to_i == 200 && !resp.body.to_s.strip.empty?
@@ -93,28 +102,35 @@ class RestRequestor
     end
   end
 
-  def retry_delay(retries)
-    # Approx seconds: 1~2.5, 2~7.5, 3~17.5, 4~37.5, 5~77.5, 6~157.5, 7~317.3
-    2**retries + rand(0..(2**retries / 2.0))
-  end
-
   def resolve_redirects(url, limit = 10)
     uri = URI.parse(url)
 
     limit.times do
       http = build_http(uri)
       req = Net::HTTP::Head.new(uri.request_uri)
-      req["User-Agent"] = options[:user_agent]
+      req["User-Agent"] = options[:user_agent] unless options[:user_agent].to_s.strip.empty?
       response = http.request(req)
       return uri.to_s unless response.is_a?(Net::HTTPRedirection)
 
       uri = URI.join(uri, response["location"])
     end
 
-    raise "Too many redirects"
+    raise TooManyRedirectsError, "Too many redirects resolving #{url}"
   end
 
   private
+
+  def warn_no_user_agent
+    msg = "[RestRequestor] No user_agent set — many APIs require one. " \
+          "Pass user_agent: \"YourApp/1.0\" to the initializer or set it in a config file."
+    options[:logger]&.warn(msg)
+    Kernel.warn(msg)
+  end
+
+  def retry_delay(retries)
+    # Approx seconds: 1~2.5, 2~7.5, 3~17.5, 4~37.5, 5~77.5, 6~157.5, 7~317.3
+    2**retries + rand(0..(2**retries / 2.0))
+  end
 
   def add_query_string(uri, q_params)
     separator = uri.include?("?") ? "&" : "?"
@@ -135,6 +151,8 @@ class RestRequestor
       http.min_version = OpenSSL::SSL::TLS1_2_VERSION
     end
 
+    http.open_timeout = options[:open_timeout]
+    http.read_timeout = options[:read_timeout]
     http
   end
 
@@ -143,11 +161,12 @@ class RestRequestor
     http = build_http(uri_obj)
 
     request_class = case verb
-    when :get then Net::HTTP::Get
-    when :post then Net::HTTP::Post
-    when :put then Net::HTTP::Put
+    when :get    then Net::HTTP::Get
+    when :post   then Net::HTTP::Post
+    when :put    then Net::HTTP::Put
     when :delete then Net::HTTP::Delete
-    when :patch then Net::HTTP::Patch
+    when :patch  then Net::HTTP::Patch
+    when :head   then Net::HTTP::Head
     end
 
     request_path = uri_obj.path
@@ -155,7 +174,7 @@ class RestRequestor
     request_path = "/" if request_path.empty?
 
     req = request_class.new(request_path)
-    req["User-Agent"] = options[:user_agent]
+    req["User-Agent"] = options[:user_agent] unless options[:user_agent].to_s.strip.empty?
 
     headers.each { |key, value| req[key.to_s] = value }
 
@@ -191,7 +210,7 @@ class RestRequestor
   end
 
   def proxy_alive?(refresh: false)
-    remove_instance_variable(:@oroxy_alive) if refresh
+    remove_instance_variable(:@proxy_alive) if refresh
     return @proxy_alive if defined?(@proxy_alive)
 
     if options[:skip_proxy] || %w[1 true yes].include?(ENV["REST_REQUESTOR_SKIP_PROXY"].to_s.downcase)
