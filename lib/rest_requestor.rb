@@ -37,6 +37,7 @@ class RestRequestor
     read_timeout: 30,
     proxy_address: "127.0.0.1",
     proxy_port: 9090,
+    proxy_probe_uri: "https://example.com",
     user_agent: nil,
     skip_proxy: true,
     logger: nil
@@ -218,7 +219,7 @@ class RestRequestor
     end
 
     begin
-      uri = URI("https://httpbin.org/ip")
+      uri = URI(options[:proxy_probe_uri])
       http = Net::HTTP.new(uri.host, uri.port, options[:proxy_address], options[:proxy_port])
       http.use_ssl = true
       http.verify_mode = OpenSSL::SSL::VERIFY_PEER

@@ -40,6 +40,10 @@ class RestRequestor
         result[:user_agent] = "#{sanitized}/#{VERSION}"
       end
 
+      if (v = data["proxy_probe_uri"] || data[:proxy_probe_uri])
+        result[:proxy_probe_uri] = v.to_s.strip unless v.to_s.strip.empty?
+      end
+
       if (v = data["max_retries"] || data[:max_retries])
         n = v.to_i
         result[:max_retries] = n if n > 0

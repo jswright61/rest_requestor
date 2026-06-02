@@ -17,6 +17,7 @@ class TestRestRequestor < Minitest::Test
     assert_equal 7, @rr.options[:max_retries]
     assert_equal 10, @rr.options[:open_timeout]
     assert_equal 30, @rr.options[:read_timeout]
+    assert_equal "https://example.com", @rr.options[:proxy_probe_uri]
     assert_equal true, @rr.options[:skip_proxy]
     assert_nil RestRequestor::OPTION_DEFAULTS[:user_agent]
   end
@@ -123,6 +124,15 @@ class TestRestRequestorConfig < Minitest::Test
   def test_parse_sets_read_timeout
     result = RestRequestor::Config.parse("read_timeout" => 60)
     assert_equal 60.0, result[:read_timeout]
+  end
+
+  def test_parse_sets_proxy_probe_uri
+    result = RestRequestor::Config.parse("proxy_probe_uri" => "https://myproxy.internal/probe")
+    assert_equal "https://myproxy.internal/probe", result[:proxy_probe_uri]
+  end
+
+  def test_parse_ignores_blank_proxy_probe_uri
+    assert_equal({}, RestRequestor::Config.parse("proxy_probe_uri" => "  "))
   end
 
   def test_parse_ignores_zero_or_negative_numeric_values
