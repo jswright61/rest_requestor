@@ -2,7 +2,7 @@
 
 **Source:** https://codeberg.org/jswright61/rest_requestor
 
-A minimal Ruby HTTP client built on `Net::HTTP` with no external runtime dependencies. Handles JSON requests and responses, typed error classes, exponential backoff on 503s, optional proxy support, and a tiered config file system.
+A minimal Ruby HTTP client built on `Net::HTTP` with no external runtime dependencies. Handles JSON requests and responses, typed error classes, exponential backoff on 503s, short retries on transient server errors, optional proxy support, and a tiered config file system.
 
 ## Installation
 
@@ -77,7 +77,11 @@ rr.request(url, :get, auth: -> { "Bearer #{TokenStore.current}" })
 | 404 | raises `RestRequestor::NotFoundError` |
 | 429 | raises `RestRequestor::RateLimitError` |
 | 503 | Retries with exponential backoff, then raises `RestRequestor::ServiceUnavailableError` |
-| Any other 4xx / 5xx | raises `RestRequestor::StandardError` |
+| 500 / 502 / 504 | Retries `:get`, `:put`, `:delete` and `:head` up to `max_server_error_retries` times, then raises `RestRequestor::ServerError`. `:post` and `:patch` raise at once, since the server may already have acted on them |
+| Any other 5xx | raises `RestRequestor::ServerError` |
+| Any other 4xx | raises `RestRequestor::StandardError` |
+
+A server-error retry waits for the response's `Retry-After` (in seconds, capped at 30) when it gives one, and otherwise backs off as for a 503. These retries are counted separately from 503 retries.
 
 The raw response object and elapsed time are always available after a request:
 
@@ -100,6 +104,8 @@ rescue RestRequestor::RateLimitError
   # 429 — retry logic is left to the caller; semantics vary per API
 rescue RestRequestor::ServiceUnavailableError
   # 503 after all retries exhausted
+rescue RestRequestor::ServerError
+  # any other 5xx, after any retries
 rescue RestRequestor::StandardError => e
   # any other non-2xx response
   puts e.message
@@ -134,6 +140,7 @@ Initializer values take **highest** priority and override both defaults and conf
 |---|---|---|
 | `user_agent` | `nil` | See [User Agent](#user-agent) |
 | `max_retries` | `7` | Maximum 503 retry attempts |
+| `max_server_error_retries` | `2` | Maximum retries of a 500, 502 or 504 on an idempotent verb; `0` turns them off |
 | `open_timeout` | `10` | Seconds to wait for a connection |
 | `read_timeout` | `30` | Seconds to wait for a response |
 | `skip_proxy` | `true` | Bypass proxy even if configured |
@@ -175,7 +182,7 @@ read_timeout: 20
 
 `user_agent` in a config file is sanitized — any character outside `[A-Za-z0-9_-]` is replaced with `_` — and `/VERSION` is appended automatically. `"My App"` becomes `"My_App/0.4.0"`.
 
-Numeric settings (`max_retries`, `open_timeout`, `read_timeout`) are ignored if zero or negative.
+Numeric settings (`max_retries`, `open_timeout`, `read_timeout`) are ignored if zero or negative. `max_server_error_retries` accepts zero, which turns server-error retries off.
 
 ### Environment variables
 

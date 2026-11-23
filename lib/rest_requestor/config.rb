@@ -17,7 +17,7 @@ class RestRequestor
       ],
       # Tier 2 — explicit path via environment variable
       [
-        -> { (v = ENV["REST_REQUESTOR_CONFIG"]) && !v.empty? ? v : nil }
+        -> { ((v = ENV["REST_REQUESTOR_CONFIG"]) && !v.empty?) ? v : nil }
       ],
       # Tier 3 — project-local (most specific)
       [
@@ -36,7 +36,7 @@ class RestRequestor
       result = {}
 
       if (raw_ua = data["user_agent"] || data[:user_agent])
-        sanitized = raw_ua.to_s.gsub(/[^A-Za-z0-9_\-]/, "_")
+        sanitized = raw_ua.to_s.gsub(/[^A-Za-z0-9_-]/, "_")
         result[:user_agent] = "#{sanitized}/#{VERSION}"
       end
 
@@ -47,6 +47,12 @@ class RestRequestor
       if (v = data["max_retries"] || data[:max_retries])
         n = v.to_i
         result[:max_retries] = n if n > 0
+      end
+
+      # Zero is allowed here: it turns server-error retries off
+      if (v = data["max_server_error_retries"] || data[:max_server_error_retries])
+        n = v.to_i
+        result[:max_server_error_retries] = n if n >= 0
       end
 
       %i[open_timeout read_timeout].each do |key|
@@ -64,9 +70,9 @@ class RestRequestor
         path = location.call
         next unless path && File.exist?(path)
         begin
-          data = YAML.safe_load(File.read(path))
+          data = YAML.safe_load_file(path)
           return data if data.is_a?(Hash)
-        rescue ::StandardError
+        rescue
           next
         end
       end

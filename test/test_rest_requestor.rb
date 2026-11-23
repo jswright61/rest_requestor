@@ -5,8 +5,27 @@ require "tmpdir"
 require_relative "../lib/rest_requestor"
 
 class TestRestRequestor < Minitest::Test
+  FakeResponse = Struct.new(:code, :message, :body, :headers) do
+    def [](key) = headers[key]
+  end
+
   def setup
     @rr = RestRequestor.new(user_agent: "TestSuite/1.0")
+  end
+
+  # Stubs the network and sleep: each request gets the next of `codes` (the last one
+  # repeats). Returns the list of verbs sent and the list of pauses.
+  def stub_responses(rr, *codes, headers: {})
+    sent = []
+    pauses = []
+    rr.define_singleton_method(:exec_req) do |_uri, verb, *|
+      sent << verb
+      code = codes[[sent.size - 1, codes.size - 1].min]
+      body = (code == 200) ? '{"ok":true}' : '{"error":"boom"}'
+      @resp = FakeResponse.new(code.to_s, "Status #{code}", body, {"Content-Type" => "application/json"}.merge(headers))
+    end
+    rr.define_singleton_method(:sleep) { |secs| pauses << secs }
+    [sent, pauses]
   end
 
   def test_version_defined
@@ -15,6 +34,7 @@ class TestRestRequestor < Minitest::Test
 
   def test_default_options
     assert_equal 7, @rr.options[:max_retries]
+    assert_equal 2, @rr.options[:max_server_error_retries]
     assert_equal 10, @rr.options[:open_timeout]
     assert_equal 30, @rr.options[:read_timeout]
     assert_equal "https://example.com", @rr.options[:proxy_probe_uri]
@@ -52,15 +72,8 @@ class TestRestRequestor < Minitest::Test
   end
 
   def test_head_verb_is_valid
-    # :head is accepted — no ArgumentError raised before the network call
-    assert_raises(Exception) { @rr.request("https://0.0.0.0", :head) }
-    begin
-      @rr.request("https://0.0.0.0", :head)
-    rescue ArgumentError
-      flunk ":head raised ArgumentError — should be a valid verb"
-    rescue Exception
-      # any other error (network, timeout) is fine
-    end
+    stub_responses(@rr, 200)
+    assert_equal 200, @rr.request("https://example.com", :head)
   end
 
   def test_retry_delay_is_private
@@ -71,6 +84,90 @@ class TestRestRequestor < Minitest::Test
     d1 = @rr.send(:retry_delay, 1)
     d3 = @rr.send(:retry_delay, 3)
     assert d3 > d1
+  end
+
+  def test_get_retries_500_then_succeeds
+    sent, pauses = stub_responses(@rr, 500, 200)
+    assert_equal({"ok" => true}, @rr.request("https://example.com/x", :get))
+    assert_equal 2, sent.size
+    assert_equal 1, pauses.size
+  end
+
+  def test_retries_502_and_504_on_idempotent_verbs
+    [502, 504].each do |code|
+      %i[get put delete].each do |verb|
+        rr = RestRequestor.new(user_agent: "TestSuite/1.0")
+        sent, _ = stub_responses(rr, code, 200)
+        assert_equal({"ok" => true}, rr.request("https://example.com/x", verb))
+        assert_equal 2, sent.size, "#{verb} on #{code}"
+      end
+    end
+  end
+
+  def test_raises_server_error_after_max_server_error_retries
+    sent, pauses = stub_responses(@rr, 500)
+    err = assert_raises(RestRequestor::ServerError) { @rr.request("https://example.com/x", :get) }
+    assert_match(/Resp: 500/, err.message)
+    assert_equal 3, sent.size
+    assert_equal 2, pauses.size
+  end
+
+  def test_post_and_patch_raise_on_500_without_retrying
+    %i[post patch].each do |verb|
+      rr = RestRequestor.new(user_agent: "TestSuite/1.0")
+      sent, pauses = stub_responses(rr, 500, 200)
+      assert_raises(RestRequestor::ServerError) { rr.request("https://example.com/x", verb, j_params: {a: 1}) }
+      assert_equal 1, sent.size
+      assert_empty pauses
+    end
+  end
+
+  def test_zero_max_server_error_retries_disables_retry
+    rr = RestRequestor.new(user_agent: "TestSuite/1.0", max_server_error_retries: 0)
+    sent, _ = stub_responses(rr, 500, 200)
+    assert_raises(RestRequestor::ServerError) { rr.request("https://example.com/x", :get) }
+    assert_equal 1, sent.size
+  end
+
+  def test_other_5xx_raises_server_error_without_retrying
+    sent, _ = stub_responses(@rr, 501, 200)
+    assert_raises(RestRequestor::ServerError) { @rr.request("https://example.com/x", :get) }
+    assert_equal 1, sent.size
+  end
+
+  def test_4xx_still_raises_plain_standard_error
+    stub_responses(@rr, 400)
+    err = assert_raises(RestRequestor::StandardError) { @rr.request("https://example.com/x", :get) }
+    refute_kind_of RestRequestor::ServerError, err
+  end
+
+  def test_server_error_retry_honors_retry_after_header
+    _, pauses = stub_responses(@rr, 500, 200, headers: {"Retry-After" => "4"})
+    @rr.request("https://example.com/x", :get)
+    assert_equal [4], pauses
+  end
+
+  def test_server_error_retry_caps_retry_after
+    _, pauses = stub_responses(@rr, 500, 200, headers: {"Retry-After" => "600"})
+    @rr.request("https://example.com/x", :get)
+    assert_equal [RestRequestor::MAX_RETRY_AFTER], pauses
+  end
+
+  def test_server_error_retry_ignores_http_date_retry_after
+    _, pauses = stub_responses(@rr, 500, 200, headers: {"Retry-After" => "Wed, 21 Oct 2026 07:28:00 GMT"})
+    @rr.request("https://example.com/x", :get)
+    assert_equal 1, pauses.size
+    assert_operator pauses.first, :>=, 2
+  end
+
+  def test_503_retries_do_not_use_up_server_error_retries
+    sent, _ = stub_responses(@rr, 503, 500, 500, 200)
+    assert_equal({"ok" => true}, @rr.request("https://example.com/x", :get))
+    assert_equal 4, sent.size
+  end
+
+  def test_server_error_inherits_standard_error
+    assert RestRequestor::ServerError < RestRequestor::StandardError
   end
 
   def test_standard_error_inherits_ruby_standard_error
@@ -114,6 +211,18 @@ class TestRestRequestorConfig < Minitest::Test
   def test_parse_sets_max_retries
     result = RestRequestor::Config.parse("max_retries" => 3)
     assert_equal 3, result[:max_retries]
+  end
+
+  def test_parse_sets_max_server_error_retries
+    assert_equal 4, RestRequestor::Config.parse("max_server_error_retries" => 4)[:max_server_error_retries]
+  end
+
+  def test_parse_allows_zero_max_server_error_retries
+    assert_equal 0, RestRequestor::Config.parse("max_server_error_retries" => 0)[:max_server_error_retries]
+  end
+
+  def test_parse_ignores_negative_max_server_error_retries
+    refute RestRequestor::Config.parse("max_server_error_retries" => -1).key?(:max_server_error_retries)
   end
 
   def test_parse_sets_open_timeout

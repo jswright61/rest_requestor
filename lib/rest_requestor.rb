@@ -27,12 +27,22 @@ class RestRequestor
   class RateLimitError < StandardError; end
   class NotFoundError < StandardError; end
   class ServiceUnavailableError < StandardError; end
+  class ServerError < StandardError; end
   class TooManyRedirectsError < ::StandardError; end
 
   attr_reader :resp, :elapsed, :options
 
+  # Server errors worth retrying: usually transient on the server's side
+  RETRYABLE_SERVER_ERRORS = [500, 502, 504].freeze
+  # Verbs safe to resend after a server error, which may have come after the server
+  # acted on the request. POST and PATCH aren't, so they raise without retrying.
+  IDEMPOTENT_VERBS = [:get, :put, :delete, :head].freeze
+  # Upper bound on a server's Retry-After, in seconds
+  MAX_RETRY_AFTER = 30
+
   OPTION_DEFAULTS = {
     max_retries: 7,
+    max_server_error_retries: 2,
     open_timeout: 10,
     read_timeout: 30,
     proxy_address: "127.0.0.1",
@@ -61,7 +71,7 @@ class RestRequestor
     warn_no_user_agent if options[:user_agent].to_s.strip.empty?
   end
 
-  def request(uri, verb, j_params: {}, f_hash: {}, q_params: {}, auth: nil, headers: {}, body: nil, retries: 0)
+  def request(uri, verb, j_params: {}, f_hash: {}, q_params: {}, auth: nil, headers: {}, body: nil, retries: 0, server_retries: 0)
     unless [:get, :post, :put, :delete, :patch, :head].include?(verb)
       raise ArgumentError, "Verb must be one of :get, :post, :put, :delete, :patch, :head — got #{verb.inspect}"
     end
@@ -94,10 +104,21 @@ class RestRequestor
         options[:logger]&.info { "Retrying (#{retries}), pausing #{waitfor} seconds" }
         sleep waitfor
         # q_params already incorporated into uri above; omit here to avoid double-encoding
-        request(uri, verb, j_params: j_params, f_hash: f_hash, auth: auth, headers: headers, body: body, retries: retries)
+        request(uri, verb, j_params: j_params, f_hash: f_hash, auth: auth, headers: headers, body: body, retries: retries, server_retries: server_retries)
       else
         raise ServiceUnavailableError.new(uri, verb, resp, j_params)
       end
+    when *RETRYABLE_SERVER_ERRORS
+      if IDEMPOTENT_VERBS.include?(verb) && server_retries < options[:max_server_error_retries]
+        server_retries += 1
+        waitfor = retry_after || retry_delay(server_retries)
+        options[:logger]&.info { "#{resp.code} from server, retrying (#{server_retries}), pausing #{waitfor} seconds" }
+        sleep waitfor
+        request(uri, verb, j_params: j_params, f_hash: f_hash, auth: auth, headers: headers, body: body, retries: retries, server_retries: server_retries)
+      else
+        raise ServerError.new(uri, verb, resp, j_params)
+      end
+    when 500...600 then raise ServerError.new(uri, verb, resp, j_params)
     else
       raise StandardError.new(uri, verb, resp, j_params)
     end
@@ -133,6 +154,14 @@ class RestRequestor
     2**retries + rand(0..(2**retries / 2.0))
   end
 
+  # The response's Retry-After in seconds, if it gives one (the HTTP-date form is ignored)
+  def retry_after
+    value = resp["Retry-After"].to_s.strip
+    return unless value.match?(/\A\d+\z/)
+
+    [value.to_i, MAX_RETRY_AFTER].min
+  end
+
   def add_query_string(uri, q_params)
     separator = uri.include?("?") ? "&" : "?"
     uri + separator + URI.encode_www_form(q_params)
@@ -162,12 +191,12 @@ class RestRequestor
     http = build_http(uri_obj)
 
     request_class = case verb
-    when :get    then Net::HTTP::Get
-    when :post   then Net::HTTP::Post
-    when :put    then Net::HTTP::Put
+    when :get then Net::HTTP::Get
+    when :post then Net::HTTP::Post
+    when :put then Net::HTTP::Put
     when :delete then Net::HTTP::Delete
-    when :patch  then Net::HTTP::Patch
-    when :head   then Net::HTTP::Head
+    when :patch then Net::HTTP::Patch
+    when :head then Net::HTTP::Head
     end
 
     request_path = uri_obj.path
