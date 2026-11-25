@@ -12,7 +12,7 @@ Gem::Specification.new do |spec|
   spec.description = "Wraps Net::HTTP with JSON handling, exponential backoff on 503 errors, optional proxy support, and typed error classes."
   spec.homepage = "https://codeberg.org/jswright61/rest_requestor"
   spec.license = "MIT"
-  spec.required_ruby_version = ">= 3.0"
+  spec.required_ruby_version = ">= 3.2"
 
   spec.files = Dir["lib/**/*"] + ["LICENSE"]
   spec.require_paths = ["lib"]
