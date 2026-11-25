@@ -10,7 +10,7 @@ Gem::Specification.new do |spec|
 
   spec.summary = "HTTP client with retry support, proxy awareness, and structured errors"
   spec.description = "Wraps Net::HTTP with JSON handling, exponential backoff on 503 errors, optional proxy support, and typed error classes."
-  spec.homepage = "https://codeberg.org/jswright61/rest_requestor"
+  spec.homepage = "https://github.com/jswright61/rest_requestor"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.2"
 

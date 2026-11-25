@@ -1,6 +1,6 @@
 # RestRequestor
 
-**Source:** https://codeberg.org/jswright61/rest_requestor
+**Source:** https://github.com/jswright61/rest_requestor
 
 A minimal Ruby HTTP client built on `Net::HTTP` with no external runtime dependencies. Handles JSON requests and responses, typed error classes, exponential backoff on 503s, short retries on transient server errors, optional proxy support, and a tiered config file system.
 
@@ -243,9 +243,9 @@ Raises `RestRequestor::TooManyRedirectsError` if the chain exceeds the limit (de
 
 ## Contributing
 
-Bug reports and pull requests are welcome at https://codeberg.org/jswright61/rest_requestor.
+Bug reports and pull requests are welcome at https://github.com/jswright61/rest_requestor.
 
-1. Fork the repo on Codeberg
+1. Fork the repo on GitHub
 2. Create a branch (`git checkout -b my-fix`)
 3. Make your changes and add tests — patches without tests will not be merged
 4. Run the test suite and confirm it is green (`ruby -Ilib test/test_rest_requestor.rb`)
